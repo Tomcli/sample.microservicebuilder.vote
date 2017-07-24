@@ -1,7 +1,11 @@
+# This job will be moved to deploy-job.yaml
+
 apiVersion: batch/v1
 kind: Job
 metadata:
   name: cloudant-secret-generator-deploy
+  labels:
+    app: microprofile-app
 spec:
   template:
     metadata:
@@ -17,12 +21,14 @@ spec:
             cpu: 100m
       restartPolicy: Never
 ---
+# All the cloudant services, deployments, persistent volume and claim will be moved to deploy-cloudant.yaml
+
 kind: PersistentVolume
 apiVersion: v1
 metadata:
   name: cloudant-pv
   labels:
-    type: local
+    app: microprofile-app
 spec:
   capacity:
     storage: 4Gi
@@ -30,13 +36,14 @@ spec:
     - ReadWriteMany
   hostPath:
     path: "/var/cloudant"
+  persistentVolumeReclaimPolicy: Recycle
 ---
 kind: PersistentVolumeClaim
 apiVersion: v1
 metadata:
   name: cloudant-pv-claim
   labels:
-    type: local
+    app: microprofile-app
 spec:
   accessModes:
     - ReadWriteMany
@@ -48,6 +55,8 @@ apiVersion: v1
 kind: Service
 metadata:
   name: cloudant-service
+  labels:
+    app: microprofile-app
 spec:
   type: NodePort
   ports:
@@ -55,31 +64,25 @@ spec:
       nodePort: 31111
   selector:
     name: cloudant-deployment
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: vote-service
-spec:
-  ports:
-    - port: 9080
-  selector:
-    name: vote-deployment
----
+--- 
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
   name: cloudant-db
+  labels:
+    app: microprofile-app
 spec:
   replicas: 1
   template:
     metadata:
       labels:
         name: cloudant-deployment
+        version: v1
     spec:
       containers:
       - name: cloudant-db
         image: ibmcom/cloudant-developer:1.0.1
+        imagePullPolicy: Always
         env:
         - name: dbUsername
           valueFrom:
@@ -100,42 +103,58 @@ spec:
         volumeMounts:
         - name: cloudant-pv
           mountPath: /srv
-        readinessProbe:
-          httpGet:
-            path: /
-            port: 80
-          initialDelaySeconds: 15
-          timeoutSeconds: 2
       volumes:
         - name: cloudant-pv
           persistentVolumeClaim:
             claimName: cloudant-pv-claim
 ---
+# The rest of the services stays in this file.
+
 apiVersion: extensions/v1beta1
 kind: Deployment
 metadata:
-  name: microservice-vote-sample
+  name: microservice-vote-sample-v1
+  labels:
+    app: microprofile-app
+    version: v1
 spec:
   replicas: 1
   template:
     metadata:
       labels:
         name: vote-deployment
+        app: vote-deployment
+        version: v1
     spec:
       containers:
       - name: microservice-vote
-        image: microservice-vote:latest
+        #change the image name
+        image: registry.ng.bluemix.net/<namespace>/microservice-vote
+        ports:
+          - containerPort: 9080
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: microservice-vote-sample-v2
+  labels:
+    app: microprofile-app
+    version: v2
+spec:
+  replicas: 1
+  template:
+    metadata:
+      labels:
+        name: vote-deployment
+        app: vote-deployment
+        version: v2
+    spec:
+      containers:
+      - name: microservice-vote
+        #change this image name if you build your images on Linux
+        image: registry.ng.bluemix.net/<namespace>/microservice-vote-cloudant
+        imagePullPolicy: Always
         env:
-        - name: MB_KEYSTORE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mb-keystore-password
-              key: password
-        - name: MB_TRUSTSTORE_PASSWORD
-          valueFrom:
-            secretKeyRef:
-              name: mb-truststore-password
-              key: password
         - name: dbUsername
           valueFrom:
             secretKeyRef:
@@ -145,7 +164,7 @@ spec:
           valueFrom:
             secretKeyRef:
               name: cloudant-secret
-              key: dbPassword
+              key: dbPassword 
         - name: dbHost
           value: $CLOUDANT_SERVICE_SERVICE_HOST
         - name: dbPort
@@ -154,30 +173,16 @@ spec:
         args: ["if [ ! -z $dbPassword ]; then export dbUrl=http://$CLOUDANT_SERVICE_SERVICE_HOST:$CLOUDANT_SERVICE_SERVICE_PORT; exec /opt/ibm/wlp/bin/server run defaultServer; fi;"]
         ports:
           - containerPort: 9080
-        imagePullPolicy: IfNotPresent
-        volumeMounts:
-        - name: keystore
-          mountPath: /etc/wlp/config/keystore
-        - name: truststore
-          mountPath: /etc/wlp/config/truststore
-        - name: liberty-config
-          mountPath: /config/configDropins
-        readinessProbe:
-          httpGet:
-            path: /vote/nessProbe
-            port: 9080
-      volumes:
-      - name: keystore
-        secret:
-          secretName: mb-keystore
-      - name: truststore
-        secret:
-          secretName: mb-truststore
-      - name: liberty-config
-        configMap:
-          name: liberty-logging-config
-          items:
-            - key: keystore.xml
-              path: defaults/keystore.xml
-            - key: logging.xml
-              path: defaults/logging.xml
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vote-service
+  labels:
+    app: microprofile-app
+spec:
+  ports:
+    - port: 9080
+  selector:
+    name: vote-deployment
